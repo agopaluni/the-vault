@@ -42,23 +42,29 @@ Multi-select and drag clips straight into Final Cut Pro, Premiere, Resolve, Ligh
 ## Requirements
 
 - macOS 13.0 (Ventura) or later
-- Xcode 15 or later (Xcode 26.6 used for development)
+- **Full Xcode** 15 or later — the Command Line Tools alone are not enough, since building the asset catalog requires `actool` (developed against Xcode 26.6)
+- Python 3 (ships with macOS) to generate the Xcode project
 
 ## Build
 
 ```bash
+git clone https://github.com/agopaluni/the-vault.git
+cd the-vault
 ./build_and_install.sh
 ```
 
-This regenerates the Xcode project, builds Release, and installs to `/Applications/The Vault.app`.
+This locates Xcode, regenerates the Xcode project, builds Release, installs to `/Applications/The Vault.app`, and launches it.
 
-To build manually:
+Both the install location and the toolchain can be overridden:
 
 ```bash
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild \
-  -project TheVault.xcodeproj -target "The Vault" -configuration Release \
-  SYMROOT=/tmp/vault_build build
+INSTALL_DIR=~/Applications ./build_and_install.sh
+DEVELOPER_DIR=/path/to/Xcode.app/Contents/Developer ./build_and_install.sh
 ```
+
+Or open `TheVault.xcodeproj` in Xcode and press ⌘R.
+
+The app is ad-hoc signed ("Sign to Run Locally"), which is fine when you build it yourself. There is no notarized release build — a downloaded, ad-hoc-signed `.app` would be blocked by Gatekeeper.
 
 The app ships **un-sandboxed** so it can read footage on any mounted volume without per-folder friction. To sandbox for the App Store, flip `com.apple.security.app-sandbox` in `TheVault/TheVault.entitlements`; the code already captures security-scoped bookmarks per source.
 
@@ -84,9 +90,21 @@ App icons are generated from a single square PNG:
 2. Add one or more source folders and give them nicknames.
 3. Open the project's **Source Media** tab to see everything in the pool.
 4. Select the clips you want and hit **Add to Project**.
-5. Press **Analyze** to run the free on-device pass, and optionally **Enhance with AI** (requires a key in Settings ▸ Claude API).
+5. Press **Analyze** to run the free on-device pass.
+
+Everything above works with no account, no key, and no network.
 
 If a source folder can't be read, grant The Vault access under **System Settings ▸ Privacy & Security ▸ Files and Folders** (or Full Disk Access) — most common for external drives and the Desktop/Documents/Downloads folders.
+
+### Optional: enabling the Claude tier
+
+The **Enhance with AI** button adds richer content tags and scene descriptions. To use it:
+
+1. Create an API key at [console.anthropic.com](https://console.anthropic.com) → **API Keys**.
+2. In the app, press **⌘,** → **Claude API**, paste the key, and hit **Save Key**. It is stored in your macOS Keychain — never on disk in this repo or the app's index.
+3. Open a project and press **Enhance with AI**. The button shows exactly how many clips will be sent.
+
+> **API credits are billed separately from a Claude.ai Pro/Max subscription.** A chat subscription does not cover API usage — you need credit on the Anthropic Console under **Billing**. Cost is low: the app uses `claude-haiku-4-5`, sends only 1–3 small keyframes per clip, skips mistake footage, and caches results so a clip is never analyzed twice.
 
 ---
 
