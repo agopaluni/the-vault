@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      The Vault ships UN-sandboxed by default so it can read footage on any
+      mounted volume (internal disk, SD card, SSD, external drive) without
+      per-folder bookmark friction — the realistic posture for a pro media
+      tool distributed outside the Mac App Store.
+
+      To sandbox for the Mac App Store instead, flip app-sandbox to <true/>
+      and keep the user-selected + bookmark entitlements below; the code
+      already captures security-scoped bookmarks for each source.
+    -->
+    <key>com.apple.security.app-sandbox</key>
+    <false/>
+
+    <key>com.apple.security.files.user-selected.read-only</key>
+    <true/>
+
+    <key>com.apple.security.files.bookmarks.app-scope</key>
+    <true/>
+
+    <!-- Reverse geocoding via CLGeocoder uses the network when available. -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+</dict>
+</plist>

@@ -1,0 +1,28 @@
+# macOS
+.DS_Store
+
+# Xcode
+build/
+DerivedData/
+*.xcuserstate
+*.xcuserdatad/
+xcuserdata/
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Swift Package Manager
+.swiftpm/
+.build/
+Packages/
+
+# Local tooling / scratch
+*.xcresult
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# Unrelated project that happens to live in this folder
+morvital-site/
