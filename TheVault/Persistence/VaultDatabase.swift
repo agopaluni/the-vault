@@ -20,7 +20,10 @@ struct VaultSnapshot: Codable {
     // missing key simply decodes to nil.
     // v3 makes project membership explicit (curated) instead of derived from
     // source ownership — LibraryStore backfills members once when loading v2.
-    var version: Int = 3
+    // v4 lets one folder back several projects (Source.projectIDs + isGlobal)
+    // instead of one-scope-per-source; loading v3 merges duplicate sources and
+    // the duplicate items they produced.
+    var version: Int = 4
     var sources: [Source] = []
     var items: [MediaItem] = []
     var projects: [Project] = []

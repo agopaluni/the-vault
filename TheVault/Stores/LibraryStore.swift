@@ -109,7 +109,10 @@ final class LibraryStore: ObservableObject {
                 items[i].analysis?.flags.remove(.windNoise)
             }
             rebuildIndex()
-            if snapshot.version < 3 { bulkUpdate { migrateToExplicitMembership() } }
+            bulkUpdate {
+                if snapshot.version < 3 { migrateToExplicitMembership() }
+                if snapshot.version < 4 { migrateToSharedSources() }
+            }
             refreshSourceAvailability()
             refreshFiltered()
         } catch {
@@ -124,7 +127,7 @@ final class LibraryStore: ObservableObject {
     private func migrateToExplicitMembership() {
         for pIdx in projects.indices {
             let projectID = projects[pIdx].id
-            let ownedSourceIDs = Set(sources.filter { $0.ownerProjectID == projectID }.map(\.id))
+            let ownedSourceIDs = Set(sources.filter { $0.projectIDs.contains(projectID) }.map(\.id))
             guard !ownedSourceIDs.isEmpty else { continue }
             let implied = items
                 .filter { ownedSourceIDs.contains($0.sourceID) }
@@ -134,6 +137,84 @@ final class LibraryStore: ObservableObject {
                 if let iIdx = itemIndex[item.id] { items[iIdx].projectIDs.insert(projectID) }
             }
         }
+        scheduleSave()
+    }
+
+    /// v3 → v4: a folder used to be indexed once per scope, so adding the same
+    /// folder to both the browser and a project produced two sources and two
+    /// copies of every file. Merge duplicate sources by path and fold their
+    /// items together, preserving tags, analysis, review state, and membership.
+    private func migrateToSharedSources() {
+        // 1. Merge sources that point at the same folder.
+        var survivorByPath: [String: Int] = [:]      // canonical path -> index
+        var sourceRemap: [UUID: UUID] = [:]          // dropped source -> survivor
+        var droppedSourceIDs = Set<UUID>()
+
+        for (idx, source) in sources.enumerated() {
+            let key = source.canonicalPath
+            guard let survivorIdx = survivorByPath[key] else {
+                survivorByPath[key] = idx
+                continue
+            }
+            sources[survivorIdx].projectIDs.formUnion(source.projectIDs)
+            sources[survivorIdx].isGlobal = sources[survivorIdx].isGlobal || source.isGlobal
+            if sources[survivorIdx].bookmarkData == nil {
+                sources[survivorIdx].bookmarkData = source.bookmarkData
+            }
+            sourceRemap[source.id] = sources[survivorIdx].id
+            droppedSourceIDs.insert(source.id)
+        }
+        guard !droppedSourceIDs.isEmpty else { return }
+
+        sources.removeAll { droppedSourceIDs.contains($0.id) }
+        for i in items.indices {
+            if let survivor = sourceRemap[items[i].sourceID] { items[i].sourceID = survivor }
+        }
+
+        // 2. Fold duplicate items (same file, same source) into one.
+        var keptByKey: [String: Int] = [:]           // "sourceID|path" -> index
+        var itemRemap: [UUID: UUID] = [:]            // dropped item -> kept item
+        var droppedItemIDs = Set<UUID>()
+
+        for (idx, item) in items.enumerated() {
+            let key = "\(item.sourceID.uuidString)|\(item.url.standardizedFileURL.path)"
+            guard let keptIdx = keptByKey[key] else {
+                keptByKey[key] = idx
+                continue
+            }
+            items[keptIdx].tagIDs.formUnion(item.tagIDs)
+            items[keptIdx].projectIDs.formUnion(item.projectIDs)
+            if items[keptIdx].analysis == nil { items[keptIdx].analysis = item.analysis }
+            else if items[keptIdx].analysis?.apiModel == nil, item.analysis?.apiModel != nil {
+                items[keptIdx].analysis = item.analysis      // prefer AI-enriched
+            }
+            if items[keptIdx].reviewState == nil { items[keptIdx].reviewState = item.reviewState }
+            if let extra = item.userContentTags {
+                items[keptIdx].userContentTags = (items[keptIdx].userContentTags ?? []).union(extra)
+            }
+            if let extra = item.suppressedContentTags {
+                items[keptIdx].suppressedContentTags = (items[keptIdx].suppressedContentTags ?? []).union(extra)
+            }
+            itemRemap[item.id] = items[keptIdx].id
+            droppedItemIDs.insert(item.id)
+        }
+
+        if !droppedItemIDs.isEmpty {
+            items.removeAll { droppedItemIDs.contains($0.id) }
+            // 3. Repoint project ordering at surviving items, keeping order.
+            for p in projects.indices {
+                var seen = Set<UUID>()
+                projects[p].orderedItemIDs = projects[p].orderedItemIDs
+                    .map { itemRemap[$0] ?? $0 }
+                    .filter { seen.insert($0).inserted }
+            }
+            selection = Set(selection.map { itemRemap[$0] ?? $0 })
+        }
+
+        rebuildIndex()
+        refreshSourceCounts()
+        NSLog("The Vault: merged %d duplicate source(s) and %d duplicate item(s)",
+              droppedSourceIDs.count, droppedItemIDs.count)
         scheduleSave()
     }
 
@@ -214,9 +295,9 @@ final class LibraryStore: ObservableObject {
         return working
     }
 
-    /// Source IDs owned by any project (excluded from the global browser).
+    /// Source IDs hidden from the global browser (project-only sources).
     private var projectOwnedSourceIDs: Set<UUID> {
-        Set(sources.filter { $0.ownerProjectID != nil }.map(\.id))
+        Set(sources.filter { !$0.isGlobal }.map(\.id))
     }
 
     /// Membership is explicit — the user curates which pool clips are in the
@@ -253,35 +334,53 @@ final class LibraryStore: ObservableObject {
 
     // MARK: - Sources
 
-    /// Sources shown in the browser (not owned by any project).
-    var globalSources: [Source] { sources.filter { $0.ownerProjectID == nil } }
+    /// Sources shown in the browser.
+    var globalSources: [Source] { sources.filter(\.isGlobal) }
 
-    /// Sources belonging to a project.
+    /// Sources attached to a project.
     func sources(ownedBy projectID: UUID) -> [Source] {
-        sources.filter { $0.ownerProjectID == projectID }
+        sources.filter { $0.projectIDs.contains(projectID) }
     }
 
-    /// True if a source with the same owner scope already covers this folder.
+    /// True if this folder is already attached to the given scope.
     func sourceExists(at url: URL, ownerProject: UUID? = nil) -> Bool {
         let target = url.standardizedFileURL.path
-        return sources.contains {
-            $0.ownerProjectID == ownerProject && $0.url.standardizedFileURL.path == target
-        }
+        guard let existing = sources.first(where: { $0.canonicalPath == target }) else { return false }
+        if let ownerProject { return existing.projectIDs.contains(ownerProject) }
+        return existing.isGlobal
     }
 
-    /// Add a source folder. `ownerProject` nil = a global browser source; set =
-    /// a source owned by (and only visible under) that project. Duplicates are
-    /// checked within the same scope. Returns the new source, or nil if it
-    /// already exists (with `sourceMessage` set).
+    /// Add a source folder. `ownerProject` nil = a browser source; set = attach
+    /// it to that project.
+    ///
+    /// A folder is only ever indexed ONCE: if a source already covers this
+    /// path, it is *attached* to the requested scope and its existing media is
+    /// reused, rather than creating a duplicate source and re-indexing every
+    /// file. Returns the source (new or existing), or nil if it was already
+    /// attached to this exact scope.
     @discardableResult
     func addSource(url: URL, label: String? = nil, ownerProject projectID: UUID? = nil) -> Source? {
-        if let existing = sources.first(where: {
-            $0.ownerProjectID == projectID &&
-            $0.url.standardizedFileURL.path == url.standardizedFileURL.path
-        }) {
-            sourceMessage = "“\(existing.label)” is already added."
-            return nil
+        let target = url.standardizedFileURL.path
+
+        if let idx = sources.firstIndex(where: { $0.canonicalPath == target }) {
+            let alreadyAttached = projectID.map { sources[idx].projectIDs.contains($0) }
+                ?? sources[idx].isGlobal
+            if alreadyAttached {
+                sourceMessage = "“\(sources[idx].label)” is already added."
+                return nil
+            }
+            // Reuse the existing index — attach, don't re-scan.
+            if let projectID { sources[idx].projectIDs.insert(projectID) }
+            else { sources[idx].isGlobal = true }
+            let reused = sources[idx]
+            sourceMessage = "“\(reused.label)” was already indexed — reusing its "
+                + "\(reused.indexedItemCount) clips instead of scanning again."
+            scheduleSave()
+            // Pick up anything added to the folder since the last scan.
+            if reused.isAvailable { index(source: reused) }
+            return reused
         }
+
         // Capture a security-scoped bookmark for persistent access.
         let bookmark = try? url.bookmarkData(options: .withSecurityScope,
                                              includingResourceValuesForKeys: nil,
@@ -293,11 +392,24 @@ final class LibraryStore: ObservableObject {
                             bookmarkData: bookmark,
                             mediaType: mediaType,
                             volumeName: Source.volumeName(for: url),
-                            ownerProjectID: projectID)
+                            projectIDs: projectID.map { [$0] } ?? [],
+                            isGlobal: projectID == nil)
         sources.append(source)
         scheduleSave()
         index(source: source)
         return source
+    }
+
+    /// Detach a source from a project. The source (and its index) survives if
+    /// the browser or another project still uses it.
+    func detachSource(_ sourceID: UUID, fromProject projectID: UUID) {
+        guard let idx = sources.firstIndex(where: { $0.id == sourceID }) else { return }
+        sources[idx].projectIDs.remove(projectID)
+        let orphaned = sources[idx].isOrphaned
+        // Drop this project's membership for that source's clips.
+        let clipIDs = Set(items.filter { $0.sourceID == sourceID }.map(\.id))
+        removeItems(clipIDs, fromProject: projectID)
+        if orphaned { removeSource(sourceID) } else { scheduleSave() }
     }
 
     /// Add a project-owned source (used by the project view's source manager).
@@ -550,20 +662,23 @@ final class LibraryStore: ObservableObject {
     }
 
     func deleteProject(_ id: UUID) {
-        // Remove the project's own sources and their indexed items (those media
-        // only existed for this project). Originals on disk are untouched.
-        let ownedSourceIDs = Set(sources.filter { $0.ownerProjectID == id }.map(\.id))
-        sources.removeAll { $0.ownerProjectID == id }
-        let removedItems = items.filter { ownedSourceIDs.contains($0.sourceID) }.map(\.id)
-        items.removeAll { ownedSourceIDs.contains($0.sourceID) }
-        selection.subtract(removedItems)
+        bulkUpdate {
+            // Detach this project from its sources. A source is only removed if
+            // nothing else uses it — a folder shared with the browser or another
+            // project keeps its index. Originals on disk are never touched.
+            for i in sources.indices { sources[i].projectIDs.remove(id) }
+            let orphanedSourceIDs = Set(sources.filter(\.isOrphaned).map(\.id))
+            sources.removeAll { orphanedSourceIDs.contains($0.id) }
+            let removedItems = items.filter { orphanedSourceIDs.contains($0.sourceID) }.map(\.id)
+            items.removeAll { orphanedSourceIDs.contains($0.sourceID) }
+            selection.subtract(removedItems)
 
-        projects.removeAll { $0.id == id }
-        for i in items.indices { items[i].projectIDs.remove(id) }
-        rebuildIndex()
-        if case .project(let pid) = sidebarSelection, pid == id { sidebarSelection = .allMedia }
-        if route == .browser, sidebarSelection == .allMedia { /* stay */ }
-        scheduleSave()
+            projects.removeAll { $0.id == id }
+            for i in items.indices { items[i].projectIDs.remove(id) }
+            rebuildIndex()
+            if case .project(let pid) = sidebarSelection, pid == id { sidebarSelection = .allMedia }
+            scheduleSave()
+        }
     }
 
     func renameProject(_ id: UUID, to name: String) {

@@ -148,8 +148,13 @@ struct ProjectView: View {
                     Button("Rename…") { renameText = source.label; renamingSource = source }
                     Button("Reveal in Finder") { NSWorkspace.shared.reveal([source.url]) }
                     Divider()
-                    Button("Remove Source", role: .destructive) { store.removeSource(source.id) }
+                    // Detaches from this project; the source survives if the
+                    // browser or another project still uses it.
+                    Button("Remove from Project", role: .destructive) {
+                        store.detachSource(source.id, fromProject: projectID)
+                    }
                 }
+                .help(sourceTooltip(source))
             }
 
             Button { addProjectSource() } label: {
@@ -161,6 +166,16 @@ struct ProjectView: View {
             .buttonStyle(.plain)
             .foregroundStyle(Theme.accent)
         }
+    }
+
+    /// Notes when a folder is shared, so removing it reads as non-destructive.
+    private func sourceTooltip(_ source: Source) -> String {
+        var parts = [source.path, "\(source.indexedItemCount) clips"]
+        let others = source.projectIDs.subtracting([projectID]).count
+        if source.isGlobal { parts.append("also in Video Browser") }
+        if others > 0 { parts.append("also in \(others) other project\(others == 1 ? "" : "s")") }
+        if !source.isAvailable { parts.append("disconnected") }
+        return parts.joined(separator: " · ")
     }
 
     private func addProjectSource() {

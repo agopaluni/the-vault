@@ -58,10 +58,15 @@ struct Source: Identifiable, Codable, Hashable {
 
     var addedAt: Date
 
-    /// The project this source belongs to. `nil` == a global browser source.
-    /// Project-owned sources are kept out of the browser's Sources list; all
-    /// their media are members of the owning project.
-    var ownerProjectID: UUID?
+    /// Projects this source is attached to. A single folder is indexed ONCE and
+    /// can serve any number of projects — attaching it elsewhere never
+    /// re-indexes its files.
+    var projectIDs: Set<UUID>
+
+    /// Whether this source appears in the browser's Sources list. A source can
+    /// be both global and attached to projects; the flag only controls browser
+    /// visibility, so project footage doesn't clutter "All Media".
+    var isGlobal: Bool
 
     /// Set at runtime by VolumeMonitor — not persisted.
     var isAvailable: Bool = true
@@ -70,11 +75,19 @@ struct Source: Identifiable, Codable, Hashable {
 
     var url: URL { URL(fileURLWithPath: path) }
 
-    var isProjectSource: Bool { ownerProjectID != nil }
+    /// Standardized path — the identity of a source folder.
+    var canonicalPath: String { url.standardizedFileURL.path }
+
+    var isProjectSource: Bool { !projectIDs.isEmpty }
+
+    /// No longer referenced by the browser or any project.
+    var isOrphaned: Bool { !isGlobal && projectIDs.isEmpty }
 
     enum CodingKeys: String, CodingKey {
         case id, label, path, bookmarkData, mediaType, volumeName, addedAt,
-             ownerProjectID, indexedItemCount
+             projectIDs, isGlobal, indexedItemCount
+        // Legacy (pre-v4): a source belonged to at most one project.
+        case ownerProjectID
     }
 
     init(id: UUID = UUID(),
@@ -84,7 +97,8 @@ struct Source: Identifiable, Codable, Hashable {
          mediaType: SourceMediaType = .unknown,
          volumeName: String? = nil,
          addedAt: Date = Date(),
-         ownerProjectID: UUID? = nil,
+         projectIDs: Set<UUID> = [],
+         isGlobal: Bool = true,
          isAvailable: Bool = true,
          indexedItemCount: Int = 0) {
         self.id = id
@@ -94,9 +108,49 @@ struct Source: Identifiable, Codable, Hashable {
         self.mediaType = mediaType
         self.volumeName = volumeName
         self.addedAt = addedAt
-        self.ownerProjectID = ownerProjectID
+        self.projectIDs = projectIDs
+        self.isGlobal = isGlobal
         self.isAvailable = isAvailable
         self.indexedItemCount = indexedItemCount
+    }
+
+    /// Custom decode so pre-v4 indexes (single `ownerProjectID`) still load.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        label = try c.decode(String.self, forKey: .label)
+        path = try c.decode(String.self, forKey: .path)
+        bookmarkData = try c.decodeIfPresent(Data.self, forKey: .bookmarkData)
+        mediaType = try c.decodeIfPresent(SourceMediaType.self, forKey: .mediaType) ?? .unknown
+        volumeName = try c.decodeIfPresent(String.self, forKey: .volumeName)
+        addedAt = try c.decodeIfPresent(Date.self, forKey: .addedAt) ?? Date()
+        indexedItemCount = try c.decodeIfPresent(Int.self, forKey: .indexedItemCount) ?? 0
+        isAvailable = true
+
+        if let ids = try c.decodeIfPresent(Set<UUID>.self, forKey: .projectIDs) {
+            projectIDs = ids
+            isGlobal = try c.decodeIfPresent(Bool.self, forKey: .isGlobal) ?? ids.isEmpty
+        } else if let legacyOwner = try c.decodeIfPresent(UUID.self, forKey: .ownerProjectID) {
+            projectIDs = [legacyOwner]     // was a project-owned source
+            isGlobal = false
+        } else {
+            projectIDs = []                // was a browser source
+            isGlobal = true
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(label, forKey: .label)
+        try c.encode(path, forKey: .path)
+        try c.encodeIfPresent(bookmarkData, forKey: .bookmarkData)
+        try c.encode(mediaType, forKey: .mediaType)
+        try c.encodeIfPresent(volumeName, forKey: .volumeName)
+        try c.encode(addedAt, forKey: .addedAt)
+        try c.encode(projectIDs, forKey: .projectIDs)
+        try c.encode(isGlobal, forKey: .isGlobal)
+        try c.encode(indexedItemCount, forKey: .indexedItemCount)
     }
 
     static func == (lhs: Source, rhs: Source) -> Bool { lhs.id == rhs.id }
