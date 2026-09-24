@@ -23,6 +23,22 @@ Every finding is ranked by how much it slows that path:
 
 ---
 
+## Update: hands-on testing (2026-09-24)
+
+These findings come from using the installed app directly, with synthetic test clips and Premiere Pro. Technical details are in QA BUG-32 to BUG-37.
+
+- **UX-02 confirmed, and worse than expected.** With the Photos filter on in a project, all 43 videos stayed visible *and* the status bar read "0 items · Zero KB". The filter both fails to apply *and* gives a false count.
+- **UX-01 confirmed.** ⌘-click and ⇧-click in "In Project" leave "1 selected", with no row highlight.
+- **New · Project order is random (Critical).** "Add to Project" loses both the pick order and the display order, and projects come out shuffled. Combined with UX-01, the curated list can't be put in story order by selecting.
+- **New · Layout shifts under the cursor (Major).** A single click opens the detail panel and reflows the grid from 7 to 5 columns, so the next ⌘-click lands on the wrong clip. Direct manipulation needs targets to stay still.
+- **New · Contradictory right-click menu (Minor).** It has two "Add to Project" items with different scopes (the clicked clip vs. the selection), and "Remove from Project" appears for clips that aren't in it.
+- **New · Launch blocked by a password prompt (Major, first-run).** The window doesn't appear until a Keychain dialog is answered. A new user sees a password prompt and no app.
+- **UX-06, reframed.** On planted test clips, the mistake flags were accurate. The *quality* flags missed obvious clipping, blur and overexposure, and "Speaking" was applied to a test tone. So the problem isn't only too many flags: the flags users most want (quality) don't fire, while a misleading tag always does.
+- **Confirmed:** ⌘A inside text fields doesn't select text (UX-16), double chevrons on the filter chips (UX-14), and a blank chip when a source's nickname is cleared.
+- **Works well in practice:** Source Media multi-select drag into Premiere, the one-click on-device analysis (about 5 s for 43 clips), and "Enhance with AI" skipping mistake clips automatically. These felt good.
+
+---
+
 ## What already works well
 
 These are worth keeping as the app changes:

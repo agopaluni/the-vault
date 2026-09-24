@@ -17,6 +17,26 @@
 
 ---
 
+## Update: hands-on testing (2026-09-24, same day)
+
+I then ran the installed app under computer-use control, with these precautions:
+- The index was backed up first (`~/Documents/TheVault-Backups/20260924-102652/`).
+- A synthetic test set was generated with ffmpeg: 43 clips and photos, each built to trigger a specific flag (`~/Documents/TheVault-TestMedia`).
+- A throwaway Premiere Pro project was used for the NLE hand-off.
+
+**Changes of status:**
+- **Now Confirmed:** BUG-06, BUG-07, BUG-16, BUG-17, BUG-19, BUG-26, BUG-27, BUG-31. Details are inline below.
+- **Confirmed working:**
+  - Multi-select drag from the Source Media grid into Premiere delivered the whole selection. **Pick order is still unverified.**
+  - ⌘A selects all media in grid views.
+  - The mistake flags (accidental start, too short, lens cap) fire correctly, and enhancement skips those clips.
+  - On-device analysis took about 5 s for 43 clips.
+- **Withdrawn:** "Select All / Add to Project buttons don't respond." A Claude desktop window, hidden from screenshots, was catching clicks in the top-right of the screen. This was an artifact of the test environment, not an app bug.
+
+**New bugs found:** BUG-32 to BUG-37 (see *New from hands-on testing* below). One is a crash (BUG-32), which puts the S1 count at 6.
+
+---
+
 ## Summary
 
 | ID | Sev | Confidence | Title |
@@ -51,7 +71,15 @@
 | BUG-28 | S4 | Confirmed | Only the last message is shown when adding several sources at once |
 | BUG-29 | S4 | Confirmed | Enhancement error banner never clears |
 | BUG-30 | S4 | Confirmed | Project item counts can include IDs of clips that no longer exist |
-| BUG-31 | S4 | Confirmed | Keychain password prompt at every launch after a rebuild |
+| BUG-31 | **S3** | Confirmed (tested) | Keychain password prompt **blocks the window from appearing** at launch after a rebuild |
+| **BUG-32** | **S1** | Confirmed (tested) | Intermittent crash: heap corruption (`BUG IN CLIENT OF LIBMALLOC: memory corruption of free block`) |
+| **BUG-33** | **S2** | Confirmed (tested) | "Add to Project" stores clips in random order (the order of an unordered `Set`) |
+| **BUG-34** | **S2** | Confirmed (tested) | On-device quality checks miss obvious clipping, blur and overexposure |
+| **BUG-35** | S3 | Confirmed (tested) | "Speaking" is tagged on any clip with audio above a set level, including a pure test tone |
+| **BUG-36** | S3 | Confirmed (tested) | Source Media right-click menu has two "Add to Project" items with different scopes, and shows "Remove from Project" for clips not in the project |
+| **BUG-37** | S3 | Confirmed (tested) | A plain click opens the detail panel and reflows the grid (7 → 5 columns) under the cursor |
+
+Confidence on BUG-06, 07, 16, 17, 19, 26 and 27 is now **Confirmed (tested)**.
 
 ---
 
@@ -248,6 +276,81 @@ PCM output from `AVAssetReader` is usually contiguous, so this is Possible, not 
 - **BUG-29:** `enhancementError` is only cleared when a new run starts. The red banner stays until then, even after the key is fixed.
 - **BUG-30:** Sidebar and project-card counts use `orderedItemIDs.count`, which includes dangling IDs (see BUG-03 and BUG-04). Count the resolved items instead, or prune IDs on removal.
 - **BUG-31:** `AppSettings.init` reads the Keychain at launch. With ad-hoc signing, every rebuild changes the code signature, so macOS asks for the login password at launch. Read lazily: store a "has key" flag in UserDefaults and touch the Keychain only on Save or Enhance.
+
+---
+
+## New from hands-on testing
+
+### BUG-32 · Intermittent crash from heap corruption (S1)
+**Crash report:** `~/Library/Logs/DiagnosticReports/The Vault-2026-09-24-104553.ips`
+
+`EXC_BREAKPOINT` / SIGTRAP, with the allocator message *"BUG IN CLIENT OF LIBMALLOC: memory corruption of free block"*. It was detected on the main thread inside SwiftUI layout: `NSHostingView.minSize` → `AppKitPlatformViewHost.invalidateLayout` → `swift_allocObject`. All other threads were idle.
+
+The allocator detects this kind of damage *after* it happens, so the thread that crashed is not the thread that caused it.
+
+**Sequence before the crash:**
+1. Launch at 10:32.
+2. Added 2 sources and 43 clips.
+3. On-device analysis at about 10:39. This used Vision face detection; there are traces of the Apple Neural Engine in the report.
+4. Clicked through several clips in the detail panel (a new `AVPlayer` per clip).
+5. Resized the window twice.
+6. Multi-dragged 5 clips into Premiere at about 10:44.
+7. The crash came at 10:45:37, while idle.
+
+The index was saved at 10:39 and is intact.
+
+**Suspects:**
+1. Apple media frameworks, as used by the app (Vision face detection, `AVPlayerView` swaps).
+2. The AppKit drag session.
+3. `AudioAnalyzer`'s unsafe buffer read (BUG-24). This is less likely, since it only reads.
+
+**Next step:** build Debug with Address Sanitizer (`-enableAddressSanitizer YES`) and replay the sequence against a copy of the index. If ASan stays silent, suspect the frameworks and look for workarounds: reuse one `AVPlayer` and swap items with `replaceCurrentItem`, and run Vision on a single serial queue.
+
+### BUG-33 · Project order is random (S2)
+**Files:** `LibraryStore.addItems(_: Set<UUID>, toProject:)`, plus every caller that passes `store.selection`.
+
+Adding 43 selected clips produced a shuffled project list (IMG_0016, 0020, 0021, PHOTO_0002, A004…). The IDs arrive as a `Set`, so neither the order you picked nor the order on screen survives. Project order is meant to be the NLE timeline order, so this undermines the point of the "In Project" list.
+
+**Fix:** take `[UUID]` and pass `store.selectionOrder`, or the displayed order, from every "Add to Project" entry point.
+
+### BUG-34 · Quality checks miss obvious problems (S2)
+Raw scores measured on the planted test clips:
+
+| Clip | Metric | Measured | Threshold | Normal clip | Flagged? |
+|---|---|---|---|---|---|
+| A006 audio clipping | audio peak | **3.82** (over 3× full scale) | ≥ 0.98 on more than 5% of samples | 0.23 | ✗ |
+| A005 blurry | Laplacian variance | **0.0006** (35× below normal) | < 0.0004 | 0.0213 | ✗ |
+| A007 overexposed | mean luma / clipped pixels | **0.889 / 19%** | > 0.95 / > 65% | 0.648 / 0% | ✗ |
+
+**Why each one misses:**
+- **Clipping:** lossy AAC smears hard clipping, and decoded float audio can exceed 1.0, so almost no samples land exactly at ≥ 0.98.
+- **Blur and exposure:** the fixed absolute thresholds are far too conservative.
+
+**Fix:**
+- Flag clipping when `peak > 1.0`, or when the crest factor (peak ÷ RMS) collapses.
+- Judge blur *relative* to the source's median sharpness.
+- Loosen exposure to about 0.85 mean luma or about 15% clipped pixels.
+- Keep these clips in the repo as regression fixtures.
+
+*Caveat:* test patterns aren't real footage, but these measurements are far past any reasonable threshold.
+
+### BUG-35 · "Speaking" goes on anything with sound (S3)
+`OnDeviceAnalyzer`: `audio.rms > 0.03` → `.dialoguePresent`. A 220 Hz sine wave was tagged **Speaking**, and so would music, wind or traffic. Rename the on-device tag to "Has audio", or add a speech-band energy / voice-activity check (`SFSpeechRecognizer` is too heavy; a 300–3400 Hz band-energy ratio is cheap).
+
+### BUG-36 · Two conflicting "Add to Project" items (S3)
+In the Source Media right-click menu:
+- The top-level **Add to Project** adds only the clicked clip (`[item.id]`).
+- The **Add to Project ▸ <project>** submenu, from `MediaContextMenu`, adds the whole selection.
+
+The menu also shows **Remove from Project** for clips that aren't in the project, because `MediaContextMenu` shows it whenever the sidebar is on a project. Make everything use the selection-aware target, and show only the action that applies.
+
+### BUG-37 · Clicking reflows the grid under the cursor (S3)
+A plain click opens the 360 pt detail panel, which shrinks the grid from 7 to 5 columns. The clip you were about to ⌘-click next moves, and the click lands on a different clip.
+
+**Fix:**
+- Don't open the panel on single click; use double-click or Space.
+- Or overlay the panel instead of resizing the grid.
+- Or keep the column count until the next idle moment.
 
 ---
 

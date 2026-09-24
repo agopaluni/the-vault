@@ -97,6 +97,7 @@ This risk comes from macOS itself, not from this code; Finder and Photos parse t
 
 - **Item settings.** The item is created with `kSecAttrAccessibleAfterFirstUnlock` rather than `…AfterFirstUnlockThisDeviceOnly`. `kSecUseDataProtectionKeychain` is not set, so it lives in the legacy login keychain. There, access is governed by an ACL tied to the app's code signature.
 - **Prompt fatigue (the main issue).** The app is ad-hoc signed, so every rebuild has a new signature. The ACL no longer matches, and **macOS asks for the login password at every launch** after a rebuild. That happens because `AppSettings.init` reads the key eagerly (you've already seen this). Training users to type their password into Keychain prompts on sight is poor security hygiene. It also makes "Always Allow" the path of least resistance.
+- **Confirmed in testing (2026-09-24):** the Keychain read runs synchronously while `AppSettings` initializes, so the app's window **does not appear at all** until the Keychain dialog is answered. Users get a password prompt with no visible app behind it, a pattern that's hard to tell apart from a phishing prompt. That raises the fatigue concern.
 - **Service name.** `com.thevault.apikey` is generic. Another app can't read it without triggering a prompt, but a prompt naming a plausible service is easy to approve by mistake.
 
 **Fix:**
@@ -155,6 +156,14 @@ Frames can contain text, such as signs or a laptop screen reading "ignore previo
 - Ad-hoc signing (`CODE_SIGN_IDENTITY = "-"`) means other people's binaries can't be verified. The README correctly says there is no release build. If you ever ship one, use Developer ID signing plus notarization.
 - The bundle ID `com.thevault.TheVault` uses a domain you don't own. Switch to reverse-DNS under your own domain before any distribution. It also namespaces the Keychain and UserDefaults.
 - The repo has no dependencies, lockfiles or CI secrets, so supply-chain exposure is minimal.
+
+---
+
+## Addendum: crash from heap corruption (2026-09-24)
+
+During hands-on testing the app crashed with *"memory corruption of free block"* (QA **BUG-32**). The cause isn't identified yet.
+
+This matters for security in the same way as SEC-02: memory corruption inside a process that parses untrusted media is the precondition for exploitation. The candidate causes include Apple's media frameworks (Vision, AVFoundation) running on the test clips. An Address Sanitizer run is planned. If ASan implicates the app's own unsafe-pointer code (`AudioAnalyzer`), this finding should be rated **Medium** alongside SEC-01.
 
 ---
 

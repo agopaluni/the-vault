@@ -10,4 +10,6 @@ A combined review of `main` @ `2e902e4`, split into three reports:
 
 **Overlap:** some issues appear in more than one report, from different angles. For example, "Re-index wipes curation" is BUG-03 in QA and part of UX-03. "Corrupt index overwrite" is BUG-02 in QA and SEC-06 in security. Fixing it once closes both.
 
+**Update (same day):** hands-on testing with computer use, synthetic test clips and Premiere Pro confirmed 8 of the static findings, withdrew 1 (an artifact of the test environment), and found 6 new bugs. That includes an intermittent heap-corruption crash (BUG-32) and random project ordering (BUG-33). Each report has an "Update: hands-on testing" section.
+
 **Fix first:** BUG-01 / SEC-01 (crash), BUG-02 (library wipe), BUG-03 and BUG-04 (curation loss), then UX-01 and UX-02 (hand-off and filters in projects).
